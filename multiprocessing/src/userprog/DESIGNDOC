@@ -1,0 +1,247 @@
+		     +--------------------------+
+       	       	     |		CS 140		|
+		     | PROJECT 2: USER PROGRAMS	|
+		     | 	   DESIGN DOCUMENT     	|
+		     +--------------------------+
+
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+Aashraya Sachdeva <aashraya.sachdeva@csa.iisc.ernet.in>
+
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+			   ARGUMENT PASSING
+			   ================
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+struct process_stats{
+	struct file *my_exectutable;	// holds the file the user process is currently executing
+	struct file *open_file[128];	// holds the lost of open files held by the user process (max 128)
+	struct children_stats *pos;	// holds the address of its data in parent's children list
+};
+
+
+struct children_stats{
+	struct thread *t;	// points to the child process used
+	tid_t child_id;		// holds child's process id
+	bool did_i_wait;	// checks whether parent already waited for child or not
+	bool is_alive;		// checks whether process succesfully loaded its executable or not
+	int return_status;	// the return status of the child process
+	struct list_elem elem;	// used for making list in parent thread
+	struct semaphore child_dead;	// used to signal waiting parent whether child is dead
+	struct semaphore child_load;	// used to signal parent whether child's executable loaded or not.
+};
+
+struct thread{
+	...
+	struct list children;	// list of struct children_stats for storing info about children processes
+	void *memloc;		// a memory location allocated in parent;s context and used to inserts children_stats into list of chldren
+	struct process_stats my_stats;	//a member of process_stats to store processes statistics
+	...
+};
+
+---- ALGORITHMS ----
+
+>> A2: Briefly describe how you implemented argument parsing.  How do
+>> you arrange for the elements of argv[] to be in the right order?
+>> How do you avoid overflowing the stack page?
+Folowing steps are used to implement argument passing:
+1. file_name is divided into tokens and pushed into stack along the way.
+2. the address corresponding to each argument is stored in a array.
+3. after that, memory alignment is done.
+4. the addresses are then pushed onto stack in reverse order.
+5. argv and argc are then pushed after that.
+
+Argumenst are checked in advanced, if their size (including terminating NULL) 
+is greater than PGSIZE, the process returns with TID_ERROR.
+
+---- RATIONALE ----
+
+>> A3: Why does Pintos implement strtok_r() but not strtok()?
+
+1. The strtok_r can be called from multiple threads simultaneously, or in nested loops. 
+2. strtok_r take an extra argument, this argument is used to store state between calls 
+instead of using a global variable.
+
+strtok is not thread safe.
+
+>> A4: In Pintos, the kernel separates commands into a executable name
+>> and arguments.  In Unix-like systems, the shell does this
+>> separation.  Identify at least two advantages of the Unix approach.
+
+Advantage is kernel is not given meager task of separating
+name and arguments, thus it can execute other high prioirty tasks.
+
+			     SYSTEM CALLS
+			     ============
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+No new structure member was added . However following declarations were made:
+static struct lock file_lock; 
+//for implementing global file lock to access files.
+
+void validate_user_address(int *esp, int no); 
+// to validate address of the arguments passed to the system handler.
+
+
+>> B2: Describe how file descriptors are associated with open files.
+>> Are file descriptors unique within the entire OS or just within a
+>> single process?
+Each user process stores pointers to its open files in an array of size
+128, open_files[128]. Each new file descripter is an array index such that
+open_file[index]=NULL. Each such inedex of this type is incremented by 2, 
+(0 and 1 are STDIN and STDOUT) and returned as fd.
+Since each user process maintains its own array, fd is local to user processs.
+
+---- ALGORITHMS ----
+
+>> B3: Describe your code for reading and writing user data from the
+>> kernel.
+The system calls valodate the addresses before they are defrenced.
+If the pointers refere to an unmapped memory or memory in kernel space,
+the process is immediately exited with return status -1. All the
+resources are made to be released before process terminates.
+
+>> B4: Suppose a system call causes a full page (4,096 bytes) of data
+>> to be copied from user space into the kernel.  What is the least
+>> and the greatest possible number of inspections of the page table
+>> (e.g. calls to pagedir_get_page()) that might result?  What about
+>> for a system call that only copies 2 bytes of data?  Is there room
+>> for improvement in these numbers, and how much?
+In both cases a maximum of two refernces are to be made to the page table
+since the data can span atmost two pages.
+In both cases the data can fit in atleast one page thus one page table 
+reference at the least is required.
+
+>> B5: Briefly describe your implementation of the "wait" system call
+>> and how it interacts with process termination.
+wait system call is imlemented as follows:
+1. The parent calling wait for a child is checked whether it is its child
+or not. If not it immediately returns.
+2. If it is the child indeed, the did_i_wait filed of the child is checked
+for whether parent waited for the child before. If parent did wait
+wait returns immediately with -1.
+3. If parent did not wait for the child before i waits on semaphore 
+child_dead.
+4. Once child is dead, its exit status is retrieved.
+
+>> B6: Any access to user program memory at a user-specified address
+>> can fail due to a bad pointer value.  Such accesses must cause the
+>> process to be terminated.  System calls are fraught with such
+>> accesses, e.g. a "write" system call requires reading the system
+>> call number from the user stack, then each of the call's three
+>> arguments, then an arbitrary amount of user memory, and any of
+>> these can fail at any point.  This poses a design and
+>> error-handling problem: how do you best avoid obscuring the primary
+>> function of code in a morass of error-handling?  Furthermore, when
+>> an error is detected, how do you ensure that all temporarily
+>> allocated resources (locks, buffers, etc.) are freed?  In a few
+>> paragraphs, describe the strategy or strategies you adopted for
+>> managing these issues.  Give an example.
+
+All the pointers are checked for any errors before they are dereferenced.
+If error is found due to pointing to a bad or kernel memory, the process
+immediately exits with -1. All the local resources are released in exit 
+functiom. However if the bad pointer occurs in between reading/writing
+file, the exits is called form page-fault user context. In this case also,
+all the resources are made to be freed before process terminates.
+
+
+---- SYNCHRONIZATION ----
+
+>> B7: The "exec" system call returns -1 if loading the new executable
+>> fails, so it cannot return before the new executable has completed
+>> loading.  How does your code ensure this?  How is the load
+>> success/failure status passed back to the thread that calls "exec"?
+
+semaphore child_load is used to make sure parents wait for the child to 
+load executable. If child dies it signals the parent using is_alive field. 
+It is set to false if executable fails to load.
+
+>> B8: Consider parent process P with child process C.  How do you
+>> ensure proper synchronization and avoid race conditions when P
+>> calls wait(C) before C exits?  After C exits?  How do you ensure
+>> that all resources are freed in each case?  How about when P
+>> terminates without waiting, before C exits?  After C exits?  Are
+>> there any special cases?
+
+child_dead semaphore is used to ensure proper synchronization.
+If P calls wait fore C exits it waits on this semaphore. 
+If P calls afetr C exits, semaphore immediately returns and
+parent can read the exit status from the child_stats.
+If P exits before C without waiting, C can exits after executing 
+normally except the return status is not given to parent.
+If P exits after C without waiting, C has already written its 
+status value, P just exits without reading it and eventually 
+destroying all the C stats.
+In all cases, All the resources are released independently by 
+C and P.  P deletes memory allocated to store the child 
+stats. C releases all the resources in exit.
+
+
+---- RATIONALE ----
+
+>> B9: Why did you choose to implement access to user memory from the
+>> kernel in the way that you did?
+I have implemented to check for valid address before derefrencing them.
+It has two advantages:
+1. first, its simple and strightforward to implement.
+2. It prevents page fault from actually happening.
+
+>> B10: What advantages or disadvantages can you see to your design
+>> for file descriptors?
+Advantages:
+1. Array approaach is simple and straighforward.
+2. Searching is done based on array indices as keys, thus
+opening and closing files is not time consuming.
+
+Disadvantages:
+1. Memory is wasted if a process does not open 128 files.
+2. Finding space in array for new file is O(n).
+
+>> B11: The default tid_t to pid_t mapping is the identity mapping.
+>> If you changed it, what advantages are there to your approach?
+No, the mapping, for the sake of simplicity has been kept as
+identity mappimg.
+
+			   SURVEY QUESTIONS
+			   ================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students, either for future quarters or the remaining projects?
+
+>> Any other comments?

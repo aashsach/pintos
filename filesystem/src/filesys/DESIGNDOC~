@@ -1,0 +1,327 @@
+       	       	     +-------------------------+
+		     |		CS 140	       |
+		     | PROJECT 4: FILE SYSTEMS |
+		     |	   DESIGN DOCUMENT     |
+		     +-------------------------+
+
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+Aashraya Sachdeva <aashraya.sachdeva@csa.iisc.ernet.in>
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+		     INDEXED AND EXTENSIBLE FILES
+		     ============================
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+struct inode_disk {
+	block_sector_t start;	//First data sector.
+	off_t length; 		//File size in bytes.
+	unsigned magic; 	//Magic number.
+
+	uint32_t direct_no;	//No. of direct inodes
+	block_sector_t direct[100];	//Array of direct inodes
+
+	uint32_t indirect_no;	//No. of indirect nodes
+	block_sector_t indirect[15];	//Array of indirect inodes
+
+	uint32_t d_indirect_no;		//No. of double indirect node
+	block_sector_t d_indirect;	//Single doubl indirect node
+
+	int is_directory;		//directory or file
+
+	uint32_t unused[5]; 	//Not used.
+};
+
+struct inode {
+	...
+	-struct inode_disk data;	//(removed)
+	+off_t len;		//length of file
+	+bool isdir;		//directory or file
+	+struct lock grow_lock;	//atomically growing and writing file
+	...
+};
+
+>> A2: What is the maximum size of a file supported by your inode
+>> structure?  Show your work.
+Size of each inode: 512 Bytes
+Number of inode enteries per block= 512/4=128
+1. Direct inodes :100
+Space supported: 100*512=51200 Bytes
+2. Indirect inodes: 15
+Inode per indirect entry: 128
+Space supported: 15*128*512= 983040 Bytes
+3. Doubly Indirect inodes: 1
+Inode per doubly indirect entry: 128*128
+Space supported: 1*128*128*512= 8388608 Bytes
+
+Total size supported: 9422848 Bytes = 8.98 MB
+ 
+
+---- SYNCHRONIZATION ----
+
+>> A3: Explain how your code avoids a race if two processes attempt to
+>> extend a file at the same time.
+Each inode in memory conatins a grow_lock.
+Any process wanting to extend the node must acquire this lock.
+Lock is held untill process is done extending and writing the file.
+After that the lenghth of file is atomically modified.
+Thus no two processes can extend the file simultaneously.
+
+>> A4: Suppose processes A and B both have file F open, both
+>> positioned at end-of-file.  If A reads and B writes F at the same
+>> time, A may read all, part, or none of what B writes.  However, A
+>> may not read data other than what B writes, e.g. if B writes
+>> nonzero data, A is not allowed to see all zeros.  Explain how your
+>> code avoids this race.
+If A try to read beyong EOF, it must first wait on grow_lock before checking 
+the length of file. Either it will wait untill file is extended, in that case
+it will see all of what process B has written.
+Or it will acquire lock before B and will see nothing of what B has written
+and read 0 bytes.
+
+>> A5: Explain how your synchronization design provides "fairness".
+>> File access is "fair" if readers cannot indefinitely block writers
+>> or vice versa.  That is, many processes reading from a file cannot
+>> prevent forever another process from writing the file, and many
+>> processes writing to a file cannot prevent another process forever
+>> from reading the file.
+Multiple readers/writers can access single file at the same time if they 
+access different blocks of the file. A single block of file can have atmost
+single process active. 
+
+---- RATIONALE ----
+
+>> A6: Is your inode structure a multilevel index?  If so, why did you
+>> choose this particular combination of direct, indirect, and doubly
+>> indirect blocks?  If not, why did you choose an alternative inode
+>> structure, and what advantages and disadvantages does your
+>> structure have, compared to a multilevel index?
+Following combination has been used:
+1. Direct: 100
+2. Indirect: 15
+3: Doubly indirect: 1
+The reason for choosing such heirarchy is as follows:
+1. File size of max 8MB was to be supported thus keeping one doubly
+indrect was a must and it alone suffices.
+2. However to reduce overhead of resolving sector number form offset,
+a combination of direct and indirect blockks have been chosen.
+3. If file is not vey large, it doesnot require doubly indirect inodes,
+and sector number can be resolved with much less overhead and reads.
+
+			    SUBDIRECTORIES
+			    ==============
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+struct open_file_dir{
+	bool is_dir;		//0: file; 1:dir
+	void *open_ptr;		//file or dir pointer
+};
+struct process_stats{
+	...
+	struct open_file_dir ofd[128];
+	...
+};
+struct thread{
+	...
+	block_sector_t pwd;	//block sector of present working 
+				directory. 0 if main, parnet's otherwise
+	struct process_stats mystats;
+	...
+}
+
+
+---- ALGORITHMS ----
+
+>> B2: Describe your code for traversing a user-specified path.  How
+>> do traversals of absolute and relative paths differ?
+The first character of path is matched with "/".
+1. If matched, the whole path is parsed by opening root directiry first
+and subsequently opening all directories untill last token is encountered.
+2. If not matched, the whole path is parsed by opening current working directory sector
+and subsequently opening all directories untill last token is encountered.
+
+---- SYNCHRONIZATION ----
+
+>> B4: How do you prevent races on directory entries?  For example,
+>> only one of two simultaneous attempts to remove a single file
+>> should succeed, as should only one of two simultaneous attempts to
+>> create a file with the same name, and so on.
+struct dir 
+  {
+	...
+	struct lock dir_lock;
+	...
+  };
+every directory has a lock associated with it. Thus any operation that modify
+directory structure are synchrnized with this lock.
+But accesses on dofferent direcrories are independent of each other.
+>> B5: Does your implementation allow a directory to be removed if it
+>> is open by a process or if it is in use as a process's current
+>> working directory?  If so, what happens to that process's future
+>> file system operations?  If not, how do you prevent it?
+1. If it is open by a process
+In this case, the directory is not removed.
+Each a request to remove a directory is made, it is cheched against the
+inode's opencount field whether it is opened by other processes.
+If so it is not removed.
+
+2. If it is in use as a process's current working directory
+A process cannot remove its own current working directory.
+This made sure as every relative address is resolved by present 
+working directory, since it is opened using resolving this, it is made 
+sure not to be deleted.
+
+---- RATIONALE ----
+
+>> B6: Explain why you chose to represent the current directory of a
+>> process the way you did.
+Current directory of a thread is simply a block_sector_t pwd field in
+threads data structure as:
+1. keeping a directory open throoughout processes execution is heavy overhead.
+A process may not do any file operations.
+2. Keeping a sector is convenient as, it can be readily openend whenever required.
+
+			     BUFFER CACHE
+			     ============
+
+---- DATA STRUCTURES ----
+
+>> C1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+#define BUFFER_SIZE 64	//number of buffer blocks
+
+struct buffer_cache_entry{
+	void* cache_loc;	//memory where a sector is cached
+	block_sector_t disk_sector;	//sector number of which data 
+					is cached
+	block_sector_t n_disk_sector;	//if marked for eviction, 
+					sector number which is to be 
+					loaded.
+	uint32_t active_rw;		//number of active read/writes 
+					inside cache block
+	bool being_evicted;		//marks cache as being evicted,
+					preventing it to be evicted again.
+	struct lock flush_load;		//process cannot access while its								is 						being flushed into old sector and 
+					loaded from new in case of eviction.
+	struct lock enter_lock;		//ensuring one process active inside 
+					one cache block
+	uint32_t timestamp;		//stores last access on a block
+};
+
+struct buffer_block{
+	struct buffer_cache_entry *buffer[BUFFER_SIZE];	//buffer cache data structure
+	struct lock mutex;;				//synchronizes modifying buffer cache data struture
+};
+tHE FOLLOWING STRUCTURE is for read ahead thread.
+It is  designed as a bounded buffer problem with buffer size of 1.
+struct read_ahead{
+	block_sector_t next;	//next sector to be loaded.
+	struct semaphore mutex, //accessing next sector
+	full, 			//signal buffer is full
+	empty;			//signal buffer is empty
+};
+
+---- ALGORITHMS ----
+
+>> C2: Describe how your cache replacement algorithm chooses a cache
+>> block to evict.
+The following algorithm is used:
+1. It scans buffer for a block which is not being evicted, not held 
+by current thread and has no thread currently accessing it.
+2. If found, it is marked as evicted and following fields ar updated
+block_sector_t n_disk_sector is set to new block to be loaded.
+bool being_evicted is set to true.
+struct lock flush_load is acquired.
+
+>> C3: Describe your implementation of write-behind.
+Write-behind is implemented in following ways:
+1. When a block is evicted it is flushed back to disk.
+2. "flusher" thread, rrgularly flushes entire cache to disk.
+3. When OS shuts down , entire cache is flushed and memory is freed.
+
+>> C4: Describe your implementation of read-ahead.
+This is implemeted by a thread using bounded buffer problem.
+Read ahead sector is treated as a producer thread.
+Loading this sector is consumer thread.
+When a process requests a sector, the next sector (if valid) is loaded
+into the cache by a read ahead thread simulating producer and consumer threads..
+Read ahead thread simply requests a buffer cache entry for the sector 
+and then exits it.
+However, this new loaded block is susceptible to eviction (since it does
+not have active threads) in case of heavy file loads.
+
+---- SYNCHRONIZATION ----
+
+>> C5: When one process is actively reading or writing data in a
+>> buffer cache block, how are other processes prevented from evicting
+>> that block?
+1. Whenever a cache is selected for eviction, it first checks for a block 
+having no active processes on it. 
+2. If no such blocks are found, then the block selected for eviction is
+marked for eviction in such a way that no other process, other than 
+already executing or waiting, can access the block.
+3. The eviction process then waits for all the processes to finish reading/
+writing from the block.
+4. The block is then flushed.
+
+>> C6: During the eviction of a block from the cache, how are other
+>> processes prevented from attempting to access the block?
+1. If a processes finds a block in cache it first checks whether the sector_disk
+and n_sector_disk are equal.
+2. If equal, it means buffer is not being flushed or loaded, thus it accesses the buffer.
+3. If not equal, and it matches the either two fields, it waits on the flush_load
+lock for buffer to flush and load new sector.
+4. It then searches again.
+
+---- RATIONALE ----
+
+>> C7: Describe a file workload likely to benefit from buffer caching,
+>> and workloads likely to benefit from read-ahead and write-behind.
+1. Buffer caching
+large number of smal sized files, frequently accessed are benfitted by this.
+These files need not be accessed in the device itself again and again since it is slow.
+2. read-ahead and write-behind
+Multiple process reading/writing large file.
+
+			   SURVEY QUESTIONS
+			   ================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students in future quarters?
+
+>> Any other comments?
